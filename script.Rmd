@@ -1,0 +1,126 @@
+---
+title: "Fishbase Lmax-ab table"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE)
+
+library(rfishbase)
+library(dplyr)
+library(tidyr)
+```
+
+In this notebook, we will compile a table of lmax and a/b coefficients using data from fishbase.
+
+### Get taxonomy info
+```{r}
+fishbase_gensp <- rfishbase::load_taxa() %>% 
+  dplyr::select(Family, Genus, Gensp = Species, speccode = SpecCode)
+fishbase_gensp
+```
+
+### Get Lmax for all fish
+Many of these will be missing and we will fill them in later by taking means across genus and families.
+```{r}
+suppressWarnings({
+lmax_info <- rfishbase::length_length() %>% 
+  dplyr::select(Gensp = Species, LengthMax) %>% 
+  dplyr::mutate(lmax = as.numeric(LengthMax)) %>% 
+  dplyr::group_by(Gensp) %>% 
+  dplyr::summarize(Lmax = max(lmax, na.rm = TRUE)) %>%
+  dplyr::mutate(Lmax = ifelse(is.infinite(Lmax), NA, Lmax)) %>% 
+  tidyr::separate(Gensp, c('Genus', 'Species'), sep = ' ', remove = FALSE) %>% 
+  dplyr::left_join(fishbase_gensp %>% 
+    dplyr::select(Family, Gensp),
+    by = "Gensp"
+  )
+})
+lmax_info
+```
+
+### Take aggregate means and add it to the lmax table
+```{r}
+genus_Lmax_info <-  lmax_info %>% 
+  dplyr::group_by(Genus) %>% 
+  dplyr::summarize(genus_Lmax = mean(Lmax, na.rm = TRUE))
+
+family_Lmax_info <- lmax_info %>% 
+  dplyr::group_by(Family) %>% 
+  dplyr::summarize(family_Lmax = mean(Lmax, na.rm = TRUE))
+
+lmax_info <- lmax_info %>% 
+  dplyr::select(Gensp, Lmax)
+
+# Since we used summarize earlier, we lost some taxonomic info we'll need for joins
+lmax_table <- dplyr::left_join(fishbase_gensp, lmax_info, by = 'Gensp') %>% 
+  dplyr::left_join(genus_Lmax_info, by = "Genus") %>% 
+  dplyr::left_join(family_Lmax_info, by = "Family")
+
+# Fill in missing data
+lmax_table <- lmax_table %>% 
+  dplyr::mutate(
+    lmax = ifelse(is.na(Lmax),
+      ifelse(is.na(genus_Lmax),
+        family_Lmax,
+        genus_Lmax
+      ),
+      Lmax
+    )
+  )
+
+lmax_table
+```
+
+### a/b table
+Now we do the same process but for a/b coefficients. For this table, we only aggregate
+up to the genus.
+```{r}
+ab_info <- rfishbase::poplw() %>% 
+  dplyr::select(Gensp = Species, a, b) %>% 
+  dplyr::group_by(Gensp) %>% 
+  dplyr::summarize(
+    a = mean(a, na.rm = TRUE),
+    b = mean(b, na.rm = TRUE)
+  ) %>% 
+  tidyr::separate(Gensp, c("Genus", "Species"), sep = " ", remove = FALSE)
+
+genus_ab_info <- ab_info %>% 
+  dplyr::group_by(Genus) %>% 
+  dplyr::summarize(
+    genus_a = mean(a, na.rm = TRUE),
+    genus_b = mean(b, na.rm = TRUE)
+  )
+
+ab_table <- ab_info %>%
+  dplyr::left_join(genus_ab_info, by = "Genus")
+
+ab_table <- ab_table %>% 
+  dplyr::mutate(
+    a = ifelse(is.na(a),
+      genus_a,
+      a
+    ),
+    b = ifelse(is.na(b),
+      genus_b,
+      b
+    )
+  )
+
+ab_table
+```
+
+### Combine lmax and a/b tables
+```{r}
+lmax_table <- dplyr::left_join(lmax_table, ab_table, by = 'Gensp')
+
+lmax_table <- lmax_table %>% 
+  dplyr::select(
+    speccode, Gensp, Family, lmax, a, b
+  )
+
+lmax_table
+```
