@@ -61,7 +61,7 @@ lmax_table <- dplyr::left_join(fishbase_gensp, lmax_info, by = 'Gensp') %>%
   dplyr::left_join(family_Lmax_info, by = "Family")
 
 # Fill in missing data
-lmax_table <- lmax_table %>% 
+bio_table <- lmax_table %>% 
   dplyr::mutate(
     lmax = ifelse(is.na(Lmax),
       ifelse(is.na(genus_Lmax),
@@ -72,7 +72,7 @@ lmax_table <- lmax_table %>%
     )
   )
 
-lmax_table
+bio_table
 ```
 
 ### a/b table
@@ -115,12 +115,96 @@ ab_table
 
 ### Combine lmax and a/b tables
 ```{r}
-lmax_table <- dplyr::left_join(lmax_table, ab_table, by = 'Gensp')
+bio_table <- dplyr::left_join(bio_table, ab_table, by = 'Gensp') %>% 
+  dplyr::select(speccode, Gensp, Family, lmax, a, b)
 
-lmax_table <- lmax_table %>% 
-  dplyr::select(
-    speccode, Gensp, Family, lmax, a, b
+bio_table
+```
+
+### Trophic levels
+```{r}
+species_info <- rfishbase::load_taxa() %>% 
+  dplyr::select(speccode = SpecCode, Species, Genus, Family)
+
+# Fill in missing genus info
+# ourfish <- dplyr::left_join(ourfish, fishbase_genus_filter, by = "species_scientific") %>% 
+#   dplyr::rename(genus_scientific = Genus)
+
+family_troph <- rfishbase::ecology() %>% 
+  dplyr::select(Species, DietTroph) %>% 
+  dplyr::left_join(species_info, by = 'Species') %>% 
+  dplyr::group_by(Family) %>% 
+  dplyr::summarize(family_trophic_level = mean(DietTroph, na.rm = TRUE))
+
+genus_troph <- rfishbase::ecology() %>% 
+  dplyr::select(Species, DietTroph) %>% 
+  dplyr::left_join(species_info, by = 'Species') %>% 
+  dplyr::group_by(Genus) %>% 
+  dplyr::summarize(genus_trophic_level = mean(DietTroph, na.rm = TRUE))
+
+#### Dec 12 2022
+# At least one species (Oreochromis niloticus) has more than one record when
+# doing just dplyr::select from rfishbase::ecology. In the future there might
+# be more species like this. So we do the same thing for genus and family:
+# group by and average.
+species_troph <- rfishbase::ecology() %>% 
+  dplyr::select(Species, DietTroph) %>% 
+  dplyr::group_by(Species) %>% 
+  dplyr::summarize(species_trophic_level = mean(DietTroph, na.rm=TRUE))
+
+trophic_table <- species_info %>% 
+  dplyr::left_join(family_troph, by = "Family") %>% 
+  dplyr::left_join(genus_troph, by = "Genus") %>% 
+  dplyr::left_join(species_troph, by = "Species") %>% 
+  dplyr::mutate(
+    # Try to use the species trophic level.
+    # If it's NA, use genus trophic level.
+    # If that's NA, use family trophic level, which will then be used regardless if NA
+    trophic_level = ifelse(is.na(species_trophic_level),
+      ifelse(is.na(genus_trophic_level),
+        family_trophic_level,
+        genus_trophic_level
+      ),
+      species_trophic_level
+    )
+  ) %>% 
+  dplyr::select(-c(
+    family_trophic_level,
+    genus_trophic_level,
+    species_trophic_level
+  ))
+
+trophic_table
+```
+
+# Join trophic table with lmax/ab
+```{r}
+bio_table <- bio_table %>% 
+  dplyr::left_join(
+    trophic_table %>% 
+      dplyr::rename(Gensp = Species) %>% 
+      dplyr::select(Gensp, trophic_level),
+    by = "Gensp"
   )
 
-lmax_table
+bio_table
+```
+
+### Update data.world file
+```{r}
+library(httr)
+library(readr)
+
+readr::write_csv(bio_table, "bio-table.csv")
+DW_TOKEN <- Sys.getenv("DW_TOKEN")
+
+# Saving output to res for debugging if necessary
+res <- httr::PUT(
+  url = "https://api.data.world/v0/uploads/rare/fishbase/files/bio-table.csv",
+  config = httr::add_headers(
+    Authorization = paste("Bearer", DW_TOKEN),
+    "Content-Type" = "application/octet-stream"
+  ),
+  body = httr::upload_file("bio-table.csv")
+)
 ```
