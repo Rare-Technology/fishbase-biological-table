@@ -1,5 +1,5 @@
 ---
-title: "Fishbase Lmax-ab table"
+title: "rfishbase Biological Table"
 output:
   html_notebook:
     toc: true
@@ -18,33 +18,38 @@ In this notebook, we will compile a table of lmax and a/b coefficients using dat
 
 ### Get taxonomy info
 ```{r}
-fishbase_gensp <- rfishbase::load_taxa() %>% 
-  dplyr::select(Family, Genus, Gensp = Species, speccode = SpecCode)
-fishbase_gensp
+taxa <- rfishbase::load_taxa(server = "fishbase") %>% 
+  dplyr::select(SpecCode, Species, Genus, Family) %>% 
+  dplyr::mutate(server = "fishbase") %>% 
+  dplyr::bind_rows(
+    rfishbase::load_taxa(server = "sealifebase") %>% 
+      dplyr::select(SpecCode, Species, Genus, Family) %>% 
+      dplyr::mutate(server = "sealifebase")
+  )
 ```
 
 ### Get Lmax for all fish
 Many of these will be missing and we will fill them in later by taking means across genus and families.
 ```{r}
 suppressWarnings({
-lmax_info <- rfishbase::length_length() %>% 
-  dplyr::select(Gensp = Species, LengthMax) %>% 
-  dplyr::mutate(lmax = as.numeric(LengthMax)) %>% 
-  dplyr::group_by(Gensp) %>% 
-  dplyr::summarize(Lmax = max(lmax, na.rm = TRUE)) %>%
-  dplyr::mutate(Lmax = ifelse(is.infinite(Lmax), NA, Lmax)) %>% 
-  tidyr::separate(Gensp, c('Genus', 'Species'), sep = ' ', remove = FALSE) %>% 
-  dplyr::left_join(fishbase_gensp %>% 
-    dplyr::select(Family, Gensp),
-    by = "Gensp"
-  )
+  lmax_info <- rfishbase::length_length(server = "fishbase") %>% 
+    dplyr::select(Species, LengthMax) %>% 
+    dplyr::bind_rows(
+      rfishbase::length_length(server = "sealifebase") %>% 
+        dplyr::select(Species, LengthMax)
+    ) %>% 
+    dplyr::mutate(lmax = as.numeric(LengthMax)) %>% 
+    dplyr::group_by(Species) %>% 
+    dplyr::summarize(Lmax = max(lmax, na.rm = TRUE)) %>%
+    dplyr::mutate(Lmax = ifelse(is.infinite(Lmax), NA, Lmax)) %>% 
+    dplyr::left_join(taxa, by = "Species")
 })
 lmax_info
 ```
 
 ### Take aggregate means and add it to the lmax table
 ```{r}
-genus_Lmax_info <-  lmax_info %>% 
+genus_Lmax_info <- lmax_info %>% 
   dplyr::group_by(Genus) %>% 
   dplyr::summarize(genus_Lmax = mean(Lmax, na.rm = TRUE))
 
@@ -52,41 +57,44 @@ family_Lmax_info <- lmax_info %>%
   dplyr::group_by(Family) %>% 
   dplyr::summarize(family_Lmax = mean(Lmax, na.rm = TRUE))
 
-lmax_info <- lmax_info %>% 
-  dplyr::select(Gensp, Lmax)
-
-# Since we used summarize earlier, we lost some taxonomic info we'll need for joins
-lmax_table <- dplyr::left_join(fishbase_gensp, lmax_info, by = 'Gensp') %>% 
+lmax_table <- lmax_info %>% 
+  dplyr::rename(species_Lmax = Lmax) %>% 
   dplyr::left_join(genus_Lmax_info, by = "Genus") %>% 
   dplyr::left_join(family_Lmax_info, by = "Family")
 
 # Fill in missing data
 bio_table <- lmax_table %>% 
   dplyr::mutate(
-    lmax = ifelse(is.na(Lmax),
+    lmax = ifelse(is.na(species_Lmax),
       ifelse(is.na(genus_Lmax),
         family_Lmax,
         genus_Lmax
       ),
-      Lmax
+      species_Lmax
     )
+  ) %>% dplyr::select(
+    SpecCode, Species, Genus, Family, lmax, server
   )
 
 bio_table
 ```
 
 ### a/b table
-Now we do the same process but for a/b coefficients. For this table, we only aggregate
-up to the genus.
+Now we do the same process but for a/b coefficients. For this table, we only aggregate up to the genus.
 ```{r}
-ab_info <- rfishbase::poplw() %>% 
-  dplyr::select(Gensp = Species, a, b) %>% 
-  dplyr::group_by(Gensp) %>% 
+ab_info <- rfishbase::poplw(server = "fishbase") %>% 
+  dplyr::select(Species, a, b) %>% 
+  dplyr::bind_rows(
+    rfishbase::poplw(server = "sealifebase") %>% 
+      dplyr::select(Species, a, b)
+  ) %>% 
+  # Some species have multiple a/b values so take the mean
+  dplyr::group_by(Species) %>% 
   dplyr::summarize(
     a = mean(a, na.rm = TRUE),
     b = mean(b, na.rm = TRUE)
   ) %>% 
-  tidyr::separate(Gensp, c("Genus", "Species"), sep = " ", remove = FALSE)
+  dplyr::left_join(taxa, by = "Species")
 
 genus_ab_info <- ab_info %>% 
   dplyr::group_by(Genus) %>% 
@@ -95,6 +103,7 @@ genus_ab_info <- ab_info %>%
     genus_b = mean(b, na.rm = TRUE)
   )
 
+### Fill in missing a/b coefficients, add to bio table
 ab_table <- ab_info %>%
   dplyr::left_join(genus_ab_info, by = "Genus")
 
@@ -108,54 +117,44 @@ ab_table <- ab_table %>%
       genus_b,
       b
     )
-  )
+  ) %>% 
+  dplyr::select(Species, a, b)
 
 ab_table
 ```
 
 ### Combine lmax and a/b tables
 ```{r}
-bio_table <- dplyr::left_join(bio_table, ab_table, by = 'Gensp') %>% 
-  dplyr::select(speccode, Gensp, Family, lmax, a, b)
+bio_table <- dplyr::left_join(bio_table, ab_table, by = "Species") %>%
+  dplyr::select(SpecCode, Species, Genus, Family, lmax, a, b, server)
 
 bio_table
 ```
 
 ### Trophic levels
 ```{r}
-species_info <- rfishbase::load_taxa() %>% 
-  dplyr::select(speccode = SpecCode, Species, Genus, Family)
-
-# Fill in missing genus info
-# ourfish <- dplyr::left_join(ourfish, fishbase_genus_filter, by = "species_scientific") %>% 
-#   dplyr::rename(genus_scientific = Genus)
-
-family_troph <- rfishbase::ecology() %>% 
+troph_info <- rfishbase::ecology(server = "fishbase") %>% 
   dplyr::select(Species, DietTroph) %>% 
-  dplyr::left_join(species_info, by = 'Species') %>% 
-  dplyr::group_by(Family) %>% 
-  dplyr::summarize(family_trophic_level = mean(DietTroph, na.rm = TRUE))
-
-genus_troph <- rfishbase::ecology() %>% 
-  dplyr::select(Species, DietTroph) %>% 
-  dplyr::left_join(species_info, by = 'Species') %>% 
-  dplyr::group_by(Genus) %>% 
-  dplyr::summarize(genus_trophic_level = mean(DietTroph, na.rm = TRUE))
-
-#### Dec 12 2022
-# At least one species (Oreochromis niloticus) has more than one record when
-# doing just dplyr::select from rfishbase::ecology. In the future there might
-# be more species like this. So we do the same thing for genus and family:
-# group by and average.
-species_troph <- rfishbase::ecology() %>% 
-  dplyr::select(Species, DietTroph) %>% 
+  dplyr::bind_rows(
+    rfishbase::ecology(server = "sealifebase") %>% 
+      dplyr::select(Species, DietTroph)
+  ) %>% 
   dplyr::group_by(Species) %>% 
-  dplyr::summarize(species_trophic_level = mean(DietTroph, na.rm=TRUE))
+  dplyr::summarize(species_trophic_level = mean(DietTroph, na.rm=TRUE)) %>% 
+  dplyr::left_join(taxa, by = 'Species')
 
-trophic_table <- species_info %>% 
+### Aggregate at family and genus level
+family_troph <- troph_info %>% 
+  dplyr::group_by(Family) %>% 
+  dplyr::summarize(family_trophic_level = mean(species_trophic_level, na.rm = TRUE))
+
+genus_troph <- troph_info %>% 
+  dplyr::group_by(Genus) %>% 
+  dplyr::summarize(genus_trophic_level = mean(species_trophic_level, na.rm = TRUE))
+
+trophic_table <- troph_info %>% 
   dplyr::left_join(family_troph, by = "Family") %>% 
   dplyr::left_join(genus_troph, by = "Genus") %>% 
-  dplyr::left_join(species_troph, by = "Species") %>% 
   dplyr::mutate(
     # Try to use the species trophic level.
     # If it's NA, use genus trophic level.
@@ -168,24 +167,15 @@ trophic_table <- species_info %>%
       species_trophic_level
     )
   ) %>% 
-  dplyr::select(-c(
-    family_trophic_level,
-    genus_trophic_level,
-    species_trophic_level
-  ))
+  dplyr::select(Species, trophic_level)
 
 trophic_table
 ```
 
 # Join trophic table with lmax/ab
 ```{r}
-bio_table <- bio_table %>% 
-  dplyr::left_join(
-    trophic_table %>% 
-      dplyr::rename(Gensp = Species) %>% 
-      dplyr::select(Gensp, trophic_level),
-    by = "Gensp"
-  )
+bio_table <- dplyr::left_join(bio_table, trophic_table, by = "Species") %>% 
+  dplyr::select(SpecCode, Species, Genus, Family, lmax, a, b, trophic_level, server)
 
 bio_table
 ```
