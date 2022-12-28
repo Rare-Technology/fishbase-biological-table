@@ -25,13 +25,13 @@ taxa <- rfishbase::load_taxa(server = "fishbase") %>%
 # =================== LMAX =================== #
 ### Get Lmax
 suppressWarnings({
-  lmax_info <- rfishbase::length_length(server = "fishbase") %>% 
-    dplyr::select(Species, LengthMax) %>% 
+  lmax_info <- rfishbase::popchar(server = "fishbase") %>% 
+    dplyr::select(Species, Lmax) %>% 
     dplyr::bind_rows(
-      rfishbase::length_length(server = "sealifebase") %>% 
-        dplyr::select(Species, LengthMax)
+      rfishbase::popchar(server = "sealifebase") %>% 
+        dplyr::select(Species, Lmax)
     ) %>% 
-    dplyr::mutate(lmax = as.numeric(LengthMax)) %>% 
+    dplyr::mutate(lmax = as.numeric(Lmax)) %>% 
     dplyr::group_by(Species) %>% 
     dplyr::summarize(Lmax = max(lmax, na.rm = TRUE)) %>%
     dplyr::mutate(Lmax = ifelse(is.infinite(Lmax), NA, Lmax)) %>% 
